@@ -20,32 +20,34 @@ public class LongStackTraceExecutor implements Executor {
 
     @Override
     public void execute(Runnable command) {
-        List<String> frames = new ArrayList<String>();
+        List<StackTraceElement> frames = new ArrayList<>();
 
         // Add the current stack frames
-        frames.add("Async >>>>>>>");
         StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+        frames.add(new StackTraceElement("asyncing", "..", null, 0));
         for (StackTraceElement stackTraceElement : stackTrace) {
-            frames.add("\tat "+stackTraceElement.toString());
+            frames.add(stackTraceElement);
         }
 
 
         LSTTask lstTask = lstTaskThreadLocal.get();
         if(lstTask != null) {
-            for (String frame : lstTask.frames) {
+            for (StackTraceElement frame : lstTask.frames) {
                 frames.add(frame);
             }
         }
 
-        executor.execute(new LSTTask(command, frames));
+        executor.execute(
+                new LSTTask(command, frames.toArray(new StackTraceElement[0]))
+        );
     }
 
 
     class LSTTask implements Runnable {
         private Runnable runnable;
-        List<String> frames;
+        StackTraceElement[] frames;
 
-        LSTTask(Runnable runnable, List<String> frames) {
+        LSTTask(Runnable runnable, StackTraceElement[] frames) {
             this.runnable = runnable;
             this.frames = frames;
         }
@@ -53,10 +55,28 @@ public class LongStackTraceExecutor implements Executor {
         @Override
         public void run() {
             lstTaskThreadLocal.set(this);
-            runnable.run();
+            try {
+                runnable.run();
+            } catch (Throwable t) {
+                RuntimeException e = new RuntimeException(t);
+                e.setStackTrace(frames);
+                throw e;
+            }
             lstTaskThreadLocal.set(null);
         }
+    }
 
+    public static Runnable tryThrow(Runnable runnable) {
+        return () -> {
+            LSTTask lstTask = lstTaskThreadLocal.get();
+            try {
+                runnable.run();
+            } catch (Throwable t) {
+                RuntimeException e = new RuntimeException(t);
+                e.setStackTrace(lstTask.frames);
+                throw e;
+            }
+        };
     }
 
     public static void dumpStack() {
@@ -68,8 +88,12 @@ public class LongStackTraceExecutor implements Executor {
 
         LSTTask lstTask = lstTaskThreadLocal.get();
         if(lstTask != null) {
-            for(String frame : lstTask.frames) {
-                System.err.println(frame);
+            for(StackTraceElement frame : lstTask.frames) {
+                if(frame.getClassName().equals("asyncing")) {
+                    System.err.println("Async >>>>>>");
+                } else {
+                    System.err.println("\tat " + frame.toString());
+                }
             }
         }
     }
